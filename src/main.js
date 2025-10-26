@@ -1,30 +1,28 @@
-import './fonts/ys-display/fonts.css';
-import './style.css';
-
-import { data as sourceData } from "./data/dataset_1.js";
+import './fonts/ys-display/fonts.css'
+import './style.css'
 
 import { initData } from "./data.js";
 import { processFormData } from "./lib/utils.js";
 
 import { initTable } from "./components/table.js";
+
+// Подключение компонентов для работы таблицы:
+// пагинации, сортировки, фильтрации и поиска
 import { initPagination } from "./components/pagination.js";
 import { initSorting } from "./components/sorting.js";
 import { initFiltering } from "./components/filtering.js";
 import { initSearching } from "./components/searching.js";
 
-// Подключение компонентов и инициализация приложения
+// Инициализация API для работы с сервером.
+// Объект `api` предоставляет методы getRecords() и getIndexes().
+const api = initData();
 
-// Исходные данные, используемые в render()
-const { data, ...indexes } = initData(sourceData);
 
-/**
- * Сбор и обработка данных из формы таблицы
- * @returns {Object}
- */
+//   Сбор и обработка данных из формы таблицы
 function collectState() {
     const state = processFormData(new FormData(sampleTable.container));
-    const rowsPerPage = parseInt(state.rowsPerPage); // Преобразуем количество строк в число
-    const page = parseInt(state.page ?? 1); // Номер текущей страницы (по умолчанию 1)
+    const rowsPerPage = parseInt(state.rowsPerPage);
+    const page = parseInt(state.page ?? 1);
 
     // Возвращаем расширенное состояние таблицы
     return {
@@ -34,25 +32,29 @@ function collectState() {
     };
 }
 
-/**
- * Перерисовка таблицы при изменениях и действиях пользователя
- * @param {HTMLButtonElement?} action
- */
-function render(action) {
-    let state = collectState(); // Текущее состояние формы
-    let result = [...data]; // Копируем исходные данные для дальнейшей обработки
+//   Перерисовка таблицы при изменениях и действиях пользователя
+async function render(action) {
+    let state = collectState(); // Текущее состояние формы таблицы
+    let query = {}; // Параметры запроса, отправляемые на сервер
 
-    // Применяем поиск, фильтрацию, сортировку и пагинацию
-    result = applySearching(result, state, action);
-    result = applyFiltering(result, state, action);
-    result = applySorting(result, state, action);
-    result = applyPagination(result, state, action);
+    // Применяем поиск, фильтрацию, сортировку и пагинацию.
+    // Каждая функция обновляет объект `query`, который используется в запросе к API.
+    query = applySearching(query, state, action);
+    query = applyFiltering(query, state, action);
+    query = applySorting(query, state, action);
+    query = applyPagination(query, state, action);
 
-    // Отрисовываем таблицу
-    sampleTable.render(result);
+    // Получаем данные с сервера согласно сформированным параметрам
+    const { total, items } = await api.getRecords(query);
+
+    // Обновляем пагинацию в соответствии с общим количеством записей и текущей страницей
+    updatePagination(total, query);
+
+    // Отрисовываем таблицу с новыми данными
+    sampleTable.render(items);
 }
 
-// Инициализация таблицы и подключение шаблонов
+// Инициализация таблицы и подключение шаблонов разметки:
 const sampleTable = initTable({
     tableTemplate: 'table',
     rowTemplate: 'row',
@@ -60,22 +62,9 @@ const sampleTable = initTable({
     after: ['pagination']
 }, render);
 
-// Инициализация поиска
-const applySearching = initSearching('search');
-
-// Инициализация фильтрации
-const applyFiltering = initFiltering(sampleTable.filter.elements, {
-    searchBySeller: indexes.sellers // Для элемента с именем searchBySeller передаём массив продавцов
-});
-
-// Инициализация сортировки
-const applySorting = initSorting([
-    sampleTable.header.elements.sortByDate,
-    sampleTable.header.elements.sortByTotal
-]);
-
-// Инициализация пагинации
-const applyPagination = initPagination(
+// Инициализация пагинации:
+// возвращает две функции — applyPagination (для формирования query) и updatePagination (для обновления интерфейса)
+const { applyPagination, updatePagination } = initPagination(
     sampleTable.pagination.elements,
     (el, page, isCurrent) => {
         const input = el.querySelector('input');
@@ -87,9 +76,56 @@ const applyPagination = initPagination(
     }
 );
 
+// Инициализация сортировки:
+// передаём элементы, отвечающие за сортировку по дате и по сумме
+const applySorting = initSorting([
+    sampleTable.header.elements.sortByDate,
+    sampleTable.header.elements.sortByTotal
+]);
+
+// Инициализация фильтрации:
+// возвращает функции applyFiltering (применить фильтры) и updateIndexes (обновить списки доступных значений)
+const { applyFiltering, updateIndexes } = initFiltering(sampleTable.filter.elements);
+
+// Инициализация поиска по таблице
+const applySearching = initSearching('search');
+
 // Добавляем таблицу в DOM
 const appRoot = document.querySelector('#app');
 appRoot.appendChild(sampleTable.container);
 
-// Первичный рендер таблицы
-render();
+/**
+ * Инициализация приложения:
+ * - Получаем индексы (списки значений для фильтров) с сервера
+ * - Обновляем фильтры
+ * - Назначаем обработчики кнопок очистки фильтров
+ */
+async function init() {
+    // Получаем вспомогательные данные с сервера, например список продавцов
+    const indexes = await api.getIndexes();
+
+    // Обновляем фильтры, подставляя полученные значения
+    updateIndexes(sampleTable.filter.elements, {
+        searchBySeller: indexes.sellers
+    });
+
+    // Обработка кнопок очистки фильтров:
+    // сбрасывает значение фильтра и вызывает повторный рендер таблицы
+    const filterRow = sampleTable.filter.container;
+    const clearButtons = filterRow.querySelectorAll('button[name="clear"]');
+
+    clearButtons.forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            e.preventDefault();
+
+            const parent = btn.closest('label');
+            const input = parent?.querySelector('input, select');
+            if (input) input.value = '';
+
+            render({ name: 'clear', dataset: { field: btn.dataset.field } });
+        });
+    });
+}
+
+// Запуск инициализации приложения и первичного рендера таблицы
+init().then(render);
